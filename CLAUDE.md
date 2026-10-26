@@ -19,7 +19,8 @@ Facts that are not visible from this directory:
    methods and a separate listener port.
 2. `$GOPATH/src/github.com/damianjaniszewski/zpages` is a second, older
    checkout (at `3c8cc74`). Edit this directory, not that one.
-3. Branch `develop` is identical to `master`. Branch `origin/SWAGGERHUB`
+3. Branches: `master` and `develop`. Local `develop` tracks local
+   `master`, not `origin/develop`. Branch `origin/SWAGGERHUB`
    contains only a SwaggerHub-generated OpenAPI spec
    (`yaml-resolved/openapi.yaml`). The spec lists `/metrics`,
    `/support/v1/info` and `/support/v1/icon`, which are not implemented, and
@@ -27,6 +28,10 @@ Facts that are not visible from this directory:
    to that unimplemented `info` endpoint.
 4. `.git.orig/` is an ignored backup of an older `.git`. Do not use or delete
    it.
+5. `.specify/memory/` is the memory bank: project brief, the proposed
+   `v0.1.0` redesign, the review behind it and the task list. Read
+   `activeContext.md` and `progress.md` before starting work. This file
+   describes the current code, not the redesign.
 
 ## 2. Build and checks
 
@@ -59,7 +64,8 @@ Results at `350fc44` (Go 1.27.3, logrus v1.10.2):
 
 1. `go build` passes.
 2. `go vet` fails on two checks. `printf`: every
-   `fmt.Fprintf(w, string(out))` uses a non-constant format string.
+   `fmt.Fprintf(w, string(out))` uses a non-constant format string, so a
+   `%` in the data (an env value, a GUID) corrupts the JSON body.
    `copylocks`: `json.Marshal(z.ServiceStatus)` copies the `sync.Mutex`
    fields; passing `&z.ServiceStatus` avoids it.
 3. Plain `go test` reports "build failed" although there are no test files,
@@ -113,16 +119,21 @@ plain state (`statusHealth`, `statusReady`), forced-ok and forced-not-ok.
    Nothing sets `statusHealthyForced` or `statusReadyForced` to true, so 203
    is unreachable. Nothing clears forced-unhealthy, so after
    `POST /support/v1/fail` health stays 501 until the process restarts.
-4. `UnsetNotReadyForced` sets the body to `ready` without checking
-   `statusReady`. After `SetNotReady`, the body says `ready` while the probe
-   returns 503.
+4. `SetNotReady` and `UnsetNotReady` also clear the forced-not-ready flag,
+   and `SupportRestart` calls `UnsetNotReadyForced`. Application code or
+   `/restart` can therefore undo an operator's quiesce.
+5. `UnsetNotReadyForced` sets the body to `ready` without checking
+   `statusReady`. After `SetNotReady`, a quiesce and a resume leave the body
+   saying `ready` while the probe returns 503.
 
 ### 3.4. Support endpoints
 
 Paths and allowed methods are set by consumers, not here:
 
 1. `POST /support/v1/{quiesce,resume,quit,restart,fail,crash}` change state.
-   The handlers do not check the method. `restart` sets and clears
+   The handlers do not check the method, and both consumers route
+   `OPTIONS` to them, so a CORS preflight runs the action. `restart` sets
+   and clears
    forced-not-ready in one call and restarts nothing. `crash` writes the
    response, then calls `log.Fatalf`, which exits the process.
 2. `GET /support/v1/{version,env}` and `GET|PUT /support/v1/loglevel` act only
@@ -136,7 +147,10 @@ Paths and allowed methods are set by consumers, not here:
    error it sends 204 with a body; on a JSON error it sends 200 with the error
    body.
 5. The handlers do not report errors from `json.Marshal` of `ServiceStatus`.
-   The support handlers marshal it without locking the mutexes.
+   The support handlers marshal it without locking the mutexes. `Healthz`
+   and `Readyz` lock only their own mutex, marshal the whole struct and
+   write the response while the mutex is locked; `go test -race` reports
+   races against the setters.
 
 ## 4. Code conventions
 
